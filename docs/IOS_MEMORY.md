@@ -47,7 +47,9 @@ patch:
   "tiger_sentence/memory_profile": compact
 ```
 
-整体替换四个 `lua/tiger_sentence*.lua` 文件；不必重建模型或清空学习数据库。
+当前版本应整体替换五个 `lua/tiger_sentence*.lua` 文件，并部署
+150,032 字节的 `tiger_sentence.lexical.bin`；不必重建模型或清空学习数据库。
+本页下列历史内存表早于该紧凑词先验，未把其约 146.5 KiB 文件载荷计入。
 
 ## 实测：内存
 
@@ -103,7 +105,8 @@ python3 tools/run_regressions.py --lua lua5.4 --negative-control
 lua5.4 tools/test_memory.lua . --require-model
 python3 tools/compare_revisions.py --baseline /path/to/c4ab19a --lua lua5.4 \
   --model /path/to/sentence-ngram-mobile.bin --require-model \
-  --memory-profile compact --trim-every 37 --report production-compact.json
+  --legacy-ranking --memory-profile compact --trim-every 37 \
+  --report production-compact.json
 
 # 计数分配器需要 Lua 5.4 开发头文件：
 cc -O2 tools/lua_memory_runner.c $(pkg-config --cflags --libs lua5.4) -o /tmp/lua-memory

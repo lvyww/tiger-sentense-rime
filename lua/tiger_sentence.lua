@@ -248,7 +248,7 @@ local lexicon_state = {
 }
 
 -- Port of SentenceLexiconIndex.Build: exact code table with line-order ranks,
--- per-character primary code (shortest wins, first rank preferred on ties),
+-- per-character primary code (rank-1 spelling preferred, then shortest),
 -- then the high-frequency optimal-code filter with the full-code whitelist.
 local function build_lexicon_index(entries, character_ranks, high_freq_limit, whitelist)
     local exact = {}
@@ -338,7 +338,12 @@ local function build_lexicon_index(entries, character_ranks, high_freq_limit, wh
                 allowed[#allowed + 1] = {
                     t = text,
                     r = index,
-                    optimal_single = optimal_input[text] == code
+                    optimal_single = optimal_input[text] == code,
+                    -- A sentence cannot use one-key character edges.  Keep a
+                    -- second marker for the strongest legal per-character
+                    -- spelling (rank-1 preferred, then shortest).  This is
+                    -- P(code|character) evidence, independent of the LM.
+                    primary_single = primary[text] == code
                 }
             end
         end
@@ -666,8 +671,23 @@ local max_raw_length = 128
 local rank_penalty = 0.03
 local emitted_character_reward = 2.0
 local whole_input_single_character_reward = 5.0
+-- Shape-code evidence is deliberately excluded from confidence mass and Beam
+-- pruning; it must not by itself make early commit look calibrated.
 local isolation_threshold = 3000
 local isolation_lambda = 2.0
+local ranking_prior = {
+    -- Shape and lexical evidence are excluded from confidence mass.  The word
+    -- filter also reranks only Top-5, so neither heuristic can manufacture
+    -- early-commit confidence or introduce a candidate that the LM missed.
+    canonical_code_reward = 2.0,
+    lexical_prior_weight = 0.1,
+    lexical_candidate_limit = 5,
+    -- A full four-key spelling is strong enough to protect an otherwise
+    -- isolated rare character; shorter spellings retain the legacy penalty.
+    canonical_isolation_factor = 0.0,
+    canonical_isolation_min_code_length = 4,
+    lexical = require("tiger_sentence_lexical")
+}
 local early_commit_minimum_share = 0.995
 -- Two consecutive generations may confirm only when dissenting Beam mass is
 -- below 0.001%; every weaker history keeps the original three-key window.
@@ -707,6 +727,14 @@ end
 local model_disabled = false
 local supplement_matcher = supplement.load_default()
 local has_supplements = (supplement_matcher.count or 0) > 0
+do
+    local paths = {}
+    for _, directory in ipairs(data_directories()) do
+        paths[#paths + 1] = join_path(directory, "tiger_sentence.lexical.bin")
+    end
+    ranking_prior.lexical_model, ranking_prior.lexical_load_error =
+        ranking_prior.lexical.load_first(paths)
+end
 
 local logp_cache_limit = 32768
 local logp_cache = {}
@@ -1173,22 +1201,67 @@ local function path_isolation_penalty(item)
     local previous = item.previous
     local penalty = path_isolation_penalty(previous)
     local last_char = previous and previous._isolation_last_char
-    local last_isolated = previous and previous._isolation_last_isolated or false
+    local last_weight = previous and previous._isolation_last_weight or 0.0
     local chars = item.edge_chars or {}
+    local edge_factor = item.edge_primary_single and
+        (item.edge_code_length or 0) >= ranking_prior.canonical_isolation_min_code_length and
+        ranking_prior.canonical_isolation_factor or 1.0
     for i = 1, #chars do
         local ch = chars[i]
         local rank = lexicon_state.character_ranks[ch] or lexicon_state.unknown_character_rank
         local rare = rank > isolation_threshold
-        local linked = last_char and (last_isolated or rare) and
+        local rare_weight = rare and edge_factor or 0.0
+        local linked = last_char and (last_weight > 0.0 or rare_weight > 0.0) and
             has_observed_bigram(last_char, ch)
-        if last_isolated and linked then penalty = penalty - isolation_lambda end
-        last_isolated = rare and not linked
-        if last_isolated then penalty = penalty + isolation_lambda end
+        if last_weight > 0.0 and linked then
+            penalty = penalty - isolation_lambda * last_weight
+        end
+        last_weight = rare and not linked and rare_weight or 0.0
+        if last_weight > 0.0 then
+            penalty = penalty + isolation_lambda * last_weight
+        end
         last_char = ch
     end
     item._isolation_penalty = penalty
     item._isolation_last_char = last_char
-    item._isolation_last_isolated = last_isolated
+    item._isolation_last_weight = last_weight
+    item._isolation_last_isolated = last_weight > 0.0
+    return penalty
+end
+
+-- Independent full-path oracle used by regressions.  This deliberately does
+-- not read or populate the lazy per-node isolation cache above.
+ranking_prior.reference_path_isolation_penalty = function(item)
+    local model = ensure_kn()
+    if not item or not model or not model.has_observed_bigram or
+        not lexicon_state.isolation_enabled then return 0 end
+    local edges = {}
+    while item and item.previous do
+        table.insert(edges, 1, item)
+        item = item.previous
+    end
+    local penalty, last_char, last_weight = 0.0, nil, 0.0
+    for _, edge in ipairs(edges) do
+        local edge_factor = edge.edge_primary_single and
+            (edge.edge_code_length or 0) >=
+                ranking_prior.canonical_isolation_min_code_length and
+            ranking_prior.canonical_isolation_factor or 1.0
+        for _, ch in ipairs(edge.edge_chars or {}) do
+            local rank = lexicon_state.character_ranks[ch] or
+                lexicon_state.unknown_character_rank
+            local rare_weight = rank > isolation_threshold and edge_factor or 0.0
+            local linked = last_char and (last_weight > 0.0 or rare_weight > 0.0) and
+                has_observed_bigram(last_char, ch)
+            if last_weight > 0.0 and linked then
+                penalty = penalty - isolation_lambda * last_weight
+            end
+            last_weight = rare_weight > 0.0 and not linked and rare_weight or 0.0
+            if last_weight > 0.0 then
+                penalty = penalty + isolation_lambda * last_weight
+            end
+            last_char = ch
+        end
+    end
     return penalty
 end
 
@@ -1582,6 +1655,7 @@ local function new_states(length)
         max_rank = 1,
         supplement_state = 1,
         supplement_score = 0.0,
+        code_score = 0.0,
         previous = nil,
         text_length = 0,
         raw_length = 0,
@@ -1592,6 +1666,11 @@ end
 
 local function expand_range(raw, states, from_pos, length, minimum_consumed_end)
     minimum_consumed_end = minimum_consumed_end or -1
+    -- Collect shape evidence on paths but do not put it into Beam scores.
+    -- The existing LM keeps complete control of candidate generation and the
+    -- prior is applied only after a path reaches the final boundary.
+    local code_reward_per_key = ensure_kn() and ranking_prior.canonical_code_reward or 0.0
+    local protect_primary_rare = ranking_prior.canonical_isolation_factor < 1.0
     for position = from_pos, length - 1 do
         local current = dedup_limit(states[position], beam_limit_at(position))
         states[position] = current
@@ -1642,6 +1721,16 @@ local function expand_range(raw, states, from_pos, length, minimum_consumed_end)
                                         end
                                         score = score - rank_penalty * candidate._log_rank
                                     end
+                                    local code_reward_added = 0.0
+                                    if code_reward_per_key > 0.0 and selected_rank == 0 and
+                                        candidate.primary_single and #chars == 1 then
+                                        -- Longer primary spellings carry more
+                                        -- shape evidence than two-key ones.
+                                        -- Summing covered raw keys also makes
+                                        -- the feature neutral when two paths
+                                        -- both explain every key canonically.
+                                        code_reward_added = code_reward_per_key * code_length
+                                    end
                                     local whole_input_single_character_reward_added = 0.0
                                     if whole_input_edge and selected_rank == 0 and
                                         candidate.optimal_single and candidate_is_single(candidate) then
@@ -1666,8 +1755,14 @@ local function expand_range(raw, states, from_pos, length, minimum_consumed_end)
                                         supplement_state = supplement_state,
                                         supplement_score = (item.supplement_score or 0.0) +
                                             supplement_added,
+                                        code_score = (item.code_score or 0.0) +
+                                            code_reward_added,
                                         previous = item,
                                         edge_chars = chars,
+                                        edge_primary_single =
+                                            protect_primary_rare and #chars == 1 and
+                                            (candidate.primary_single or selected_rank > 0),
+                                        edge_code_length = protect_primary_rare and code_length or nil,
                                         text_length = #text,
                                         raw_length = consumed_end,
                                         edge_count = (item.edge_count or 0) + 1
@@ -1712,16 +1807,23 @@ local candidate_display_meta = {
 }
 
 local function evaluate_state(item)
-    local ending_adjustment = logp(item.prev2, item.prev1, EOS) -
-        path_isolation_penalty(item)
+    local eos_score = logp(item.prev2, item.prev1, EOS)
+    local ending_adjustment = eos_score - path_isolation_penalty(item) +
+        (item.code_score or 0.0)
+    -- Code-conditioned rare-character relief is a ranking heuristic, just
+    -- like the canonical-code and supplement priors.  Confidence keeps the
+    -- legacy text-only isolation term so the heuristic cannot manufacture a
+    -- high-share early commit.
+    local confidence_ending_adjustment = eos_score - isolation_penalty(item.text)
     return {
         score = item.score + ending_adjustment,
-        confidence_score = (item.mass_score or item.score) + ending_adjustment,
+        confidence_score = (item.mass_score or item.score) + confidence_ending_adjustment,
         text = item.text,
         prev2 = item.prev2,
         prev1 = item.prev1,
         max_rank = math.max(1, item.max_rank or 1),
         supplement_score = item.supplement_score or 0.0,
+        code_score = item.code_score or 0.0,
         learning_score = item.learning_score or 0,
         edge_count = item.edge_count or 0,
         path = item
@@ -2008,6 +2110,21 @@ local function emit(raw, states, length, include_early_commit, required_text_pre
         if (item.learning_score or 0) > 0 then better = state_better_score_first; break end
     end
     local result = select_exact_top(all_candidates, candidate_limit, better)
+    if #result > 1 and ranking_prior.lexical_model and
+        ranking_prior.lexical_prior_weight > 0.0 and ensure_kn() then
+        -- Rerank only the first five displayed candidates. Character LM
+        -- remains responsible for candidate generation; the word filter
+        -- supplies a small, non-overlapping real-word vote at the end.
+        local lexical_lookup_cache = {}
+        for i = 1, math.min(#result, ranking_prior.lexical_candidate_limit) do
+            local lexical_score = ranking_prior.lexical.score(
+                ranking_prior.lexical_model, result[i].text, lexical_lookup_cache) *
+                ranking_prior.lexical_prior_weight
+            result[i].lexical_score = lexical_score
+            result[i].score = result[i].score + lexical_score
+        end
+        table.sort(result, better)
+    end
     result.learning_affected = learning_affected
     result._completed_truncated = completed._truncated or false
     -- Display Top-K is not the probability pool. Retain the scored beam for
@@ -2079,8 +2196,11 @@ local function paths_equal(left, right)
             (left.mass_score or left.score) ~= (right.mass_score or right.score) or
             (left.learning_score or 0) ~= (right.learning_score or 0) or
             (left.learning_potential or 0) ~= (right.learning_potential or 0) or
+            (left.code_score or 0) ~= (right.code_score or 0) or
             (left.max_rank or 1) ~= (right.max_rank or 1) or
-            (left.edge_count or 0) ~= (right.edge_count or 0) then
+            (left.edge_count or 0) ~= (right.edge_count or 0) or
+            (left.edge_primary_single or false) ~= (right.edge_primary_single or false) or
+            (left.edge_code_length or 0) ~= (right.edge_code_length or 0) then
             return false
         end
         left, right = left.previous, right.previous
@@ -2096,6 +2216,8 @@ local function candidates_equal(left, right, display)
             a.score ~= b.score or
             (a.confidence_score or a.score) ~= (b.confidence_score or b.score) or
             (a.supplement_score or 0) ~= (b.supplement_score or 0) or
+            (a.code_score or 0) ~= (b.code_score or 0) or
+            (a.lexical_score or 0) ~= (b.lexical_score or 0) or
             (a.learning_score or 0) ~= (b.learning_score or 0) or
             (a.max_rank or 1) ~= (b.max_rank or 1) or
             (a.edge_count or 0) ~= (b.edge_count or 0) or
@@ -2134,6 +2256,40 @@ results_equal = function(left, right)
 end
 
 end -- result-comparison helpers
+
+-- Resolve one already-confirmed lattice edge from its recorded raw/text
+-- boundaries.  Locked-prefix replay must rebuild every ranking feature that
+-- ordinary expansion attached to that edge; otherwise adding a suffix would
+-- silently change scores or rare-character protection at the lock boundary.
+ranking_prior.resolve_locked_edge = function(raw, raw_start, raw_end, text)
+    for i = 1, #lexicon_state.lengths do
+        local code_length = lexicon_state.lengths[i]
+        local code_end = raw_start + code_length
+        if code_end <= raw_end then
+            local candidates = lexicon_state.codes[raw:sub(raw_start + 1, code_end)]
+            if candidates then
+                local selected_rank, consumed_end = parse_selector(raw, code_end)
+                if consumed_end == raw_end then
+                    if selected_rank > 0 then
+                        local candidate = candidates[selected_rank]
+                        if candidate and candidate.t == text then
+                            return candidate, selected_rank, code_length
+                        end
+                    else
+                        -- A whole-input menu can lock a non-first candidate
+                        -- without writing a selector into the raw stream.
+                        for candidate_index = 1, #candidates do
+                            if candidates[candidate_index].t == text then
+                                return candidates[candidate_index], 0, code_length
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
 
 local function decode_full(raw_code, include_early_commit, required_text_prefix)
     ensure_lexicon(nil)
@@ -2201,14 +2357,36 @@ local function decode(raw_code, include_early_commit, required_text_prefix, lock
             -- without re-searching or allowing an edge to cross the lock.
             local seed = { text = "", prev2 = BOS, prev1 = BOS, score = 0, mass_score = 0,
                 max_rank = 1, supplement_state = 1, supplement_score = 0,
+                code_score = 0,
                 raw_length = 0, text_length = 0, edge_count = 0 }
             for raw_boundary, text_boundary in locked.boundaries:gmatch("(%d+),(%d+);") do
                 local r, t = tonumber(raw_boundary), tonumber(text_boundary)
-                local chars = utf_chars(locked.text:sub(seed.text_length + 1, t))
+                local edge_text = locked.text:sub(seed.text_length + 1, t)
+                local candidate, selected_rank, code_length = ranking_prior.resolve_locked_edge(
+                    raw, seed.raw_length, r, edge_text)
+                -- Text-only Backspace can shorten an already confirmed
+                -- multi-character edge while deliberately retaining its raw
+                -- boundary (for example 团圆/cd -> 团/cd).  Such an opaque
+                -- lock was valid before ranking priors existed, so replay it
+                -- with legacy-neutral code evidence instead of rejecting the
+                -- whole suffix. Exact surviving edges still recover their
+                -- canonical-code and rare-character metadata.
+                local chars = candidate and candidate_chars(candidate) or
+                    utf_chars(edge_text)
+                local protect_primary_rare =
+                    ranking_prior.canonical_isolation_factor < 1.0
                 local item = { text = locked.text:sub(1, t), previous = seed, edge_chars = chars,
                     raw_length = r, text_length = t, edge_count = seed.edge_count + 1,
                     prev2 = seed.prev2, prev1 = seed.prev1, score = seed.score,
-                    supplement_state = seed.supplement_state, supplement_score = seed.supplement_score, max_rank = 1 }
+                    supplement_state = seed.supplement_state,
+                    supplement_score = seed.supplement_score,
+                    code_score = seed.code_score or 0,
+                    -- A confirmed prefix keeps the historical neutral rank;
+                    -- the user's lock, not its former menu rank, is decisive.
+                    max_rank = 1,
+                    edge_primary_single = candidate and protect_primary_rare and #chars == 1 and
+                        (candidate.primary_single or selected_rank > 0),
+                    edge_code_length = candidate and protect_primary_rare and code_length or nil }
                 for _, ch in ipairs(chars) do
                     item.score = item.score + logp(item.prev2, item.prev1, ch) + emitted_character_reward
                     if has_supplements then
@@ -2219,7 +2397,16 @@ local function decode(raw_code, include_early_commit, required_text_prefix, lock
                     end
                     item.prev2, item.prev1 = item.prev1, ch
                 end
-                item.mass_score = item.score - item.supplement_score - (seed.learning_score or 0)
+                local code_reward_added = 0.0
+                if candidate and ensure_kn() and ranking_prior.canonical_code_reward > 0.0 and
+                    selected_rank == 0 and candidate.primary_single and #chars == 1 then
+                    code_reward_added = ranking_prior.canonical_code_reward * code_length
+                    item.code_score = item.code_score + code_reward_added
+                end
+                -- Preserve the original locked-replay operation order. Shape
+                -- evidence is tracked separately and enters only final rank.
+                item.mass_score = item.score - item.supplement_score -
+                    (seed.learning_score or 0)
                 local learned, potential = learning.reward(learning_index, learning_mode, raw, item.text, r, seed)
                 item.learning_score, item.learning_potential = learned, potential
                 item.score = item.score + learned - (seed.learning_score or 0)
@@ -3576,6 +3763,19 @@ M.supplement_status = function()
         error = supplement_matcher.error
     }
 end
+M.lexical_status = function()
+    return {
+        loaded = ranking_prior.lexical_model ~= nil,
+        path = ranking_prior.lexical_model and ranking_prior.lexical_model.path or nil,
+        error = ranking_prior.lexical_load_error,
+        entries = ranking_prior.lexical_model and ranking_prior.lexical_model.entry_count or 0,
+        bytes = ranking_prior.lexical_model and ranking_prior.lexical_model.bytes or 0,
+        minimum_length = ranking_prior.lexical_model and
+            ranking_prior.lexical_model.minimum_length or nil,
+        maximum_length = ranking_prior.lexical_model and
+            ranking_prior.lexical_model.maximum_length or nil
+    }
+end
 M.find_raw_length_for_text = find_raw_length_for_text
 M.lexicon_probe = function(code)
     local candidates = lexicon_state.codes[code]
@@ -3584,7 +3784,12 @@ M.lexicon_probe = function(code)
     end
     local copy = {}
     for index = 1, #candidates do
-        copy[index] = { t = candidates[index].t, r = candidates[index].r }
+        copy[index] = {
+            t = candidates[index].t,
+            r = candidates[index].r,
+            optimal_single = candidates[index].optimal_single or false,
+            primary_single = candidates[index].primary_single or false
+        }
     end
     return copy
 end
@@ -3606,6 +3811,7 @@ end
 M.capture_empty_code_candidate = capture_empty_code_candidate
 -- Independent full-text oracle for regression tests of lazy path scoring.
 M.reference_isolation_penalty = isolation_penalty
+M.reference_path_isolation_penalty = ranking_prior.reference_path_isolation_penalty
 M.path_isolation_penalty = path_isolation_penalty
 M.has_complete_candidate = has_complete_candidate
 M.set_allow_duplicate_single = set_allow_duplicate_single
@@ -3649,10 +3855,65 @@ M.memory_status = function()
         logp_entries=#logp_cache_keys, logp_limit=logp_cache_limit,
         observed_entries=#observed_cache_keys, observed_limit=observed_cache_limit,
         isolation_entries=#isolation_cache_keys, isolation_limit=ISOLATION_CACHE_ENTRIES,
+        lexical_bytes=ranking_prior.lexical_model and ranking_prior.lexical_model.bytes or 0,
         model=kn_model and kn_model.cache_status and kn_model.cache_status() or nil}
 end
 M.set_memory_profile = set_memory_profile
 M.configure_memory = configure_memory
+-- Offline evaluation hook.  Production entry points keep the compiled
+-- defaults; the benchmark tool can vary one parameter at a time without
+-- source rewriting.  Resetting both lookup and lattice caches is required
+-- because isolation values and path ordering are parameter-dependent.
+M.set_decoder_parameters_for_test = function(values)
+    values = values or {}
+    local function bounded(name, current, minimum, maximum, integer)
+        local value = values[name]
+        if value == nil then return current end
+        value = tonumber(value)
+        if not value or value ~= value or math.abs(value) == math.huge or
+            value < minimum or value > maximum then
+            error(string.format("invalid decoder parameter %s", name))
+        end
+        return integer and math.floor(value) or value
+    end
+    beam_width = bounded("beam_width", beam_width, 1, 5000, true)
+    long_input_full_beam_length = bounded(
+        "long_input_full_beam_length", long_input_full_beam_length, 0, max_raw_length, true)
+    long_input_beam_width = bounded(
+        "long_input_beam_width", long_input_beam_width, 1, 5000, true)
+    rank_penalty = bounded("rank_penalty", rank_penalty, 0, 10, false)
+    emitted_character_reward = bounded(
+        "emitted_character_reward", emitted_character_reward, -10, 10, false)
+    ranking_prior.canonical_code_reward = bounded(
+        "canonical_code_reward", ranking_prior.canonical_code_reward, 0, 10, false)
+    ranking_prior.lexical_prior_weight = bounded(
+        "lexical_prior_weight", ranking_prior.lexical_prior_weight, 0, 10, false)
+    isolation_threshold = bounded(
+        "isolation_threshold", isolation_threshold, 0, 1000000, true)
+    isolation_lambda = bounded("isolation_lambda", isolation_lambda, 0, 20, false)
+    ranking_prior.canonical_isolation_factor = bounded(
+        "canonical_isolation_factor", ranking_prior.canonical_isolation_factor, 0, 1, false)
+    ranking_prior.canonical_isolation_min_code_length = bounded(
+        "canonical_isolation_min_code_length",
+        ranking_prior.canonical_isolation_min_code_length, 2, 16, true)
+    clear_lookup_caches()
+    reset_decode_cache()
+end
+M.decoder_parameters = function()
+    return {
+        beam_width = beam_width,
+        long_input_full_beam_length = long_input_full_beam_length,
+        long_input_beam_width = long_input_beam_width,
+        rank_penalty = rank_penalty,
+        emitted_character_reward = emitted_character_reward,
+        canonical_code_reward = ranking_prior.canonical_code_reward,
+        lexical_prior_weight = ranking_prior.lexical_prior_weight,
+        isolation_threshold = isolation_threshold,
+        isolation_lambda = isolation_lambda,
+        canonical_isolation_factor = ranking_prior.canonical_isolation_factor,
+        canonical_isolation_min_code_length = ranking_prior.canonical_isolation_min_code_length
+    }
+end
 -- Host opt-in hook; call between key events on the owning Lua thread. Do not
 -- close the model or drop active Beam/locks/evidence/learning transactions.
 -- A full collection is deliberately explicit, never performed on every key.

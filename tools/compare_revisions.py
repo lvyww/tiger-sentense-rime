@@ -3,6 +3,7 @@
 python tools/compare_revisions.py --baseline /path/to/old/tree --lua lua5.4
 python tools/compare_revisions.py --baseline /path/to/old/tree --fixture --lua lua5.4
 python tools/compare_revisions.py --baseline /path/to/old/tree --model /path/to/model.bin --require-model
+python tools/compare_revisions.py --baseline /path/to/old/tree --fixture --legacy-ranking
 
 No model silently falls back. This is behavior equivalence, not a labeled-text
 accuracy benchmark or desktop/mobile acceptance. Intentional long-code/selector
@@ -37,6 +38,8 @@ def main():
     parser.add_argument("--report", type=Path)
     parser.add_argument("--memory-profile", choices=("balanced", "compact"), default="balanced")
     parser.add_argument("--trim-every", type=int, default=0, help="Exercise memory-pressure hook between snapshot generations")
+    parser.add_argument("--legacy-ranking", action="store_true",
+                        help="Disable compact ranking priors when a source exposes the test hook")
     args = parser.parse_args()
     lua = shutil.which(args.lua)
     if not lua:
@@ -70,7 +73,7 @@ def main():
         for label, tree in (("baseline", baseline), ("candidate", candidate)):
             data = work / label
             data.mkdir()
-            for pattern in ("*.txt", "*.yaml"):
+            for pattern in ("*.txt", "*.yaml", "tiger_sentence.lexical.bin"):
                 for source in tree.glob(pattern):
                     shutil.copy2(source, data / source.name)
             if model:
@@ -82,7 +85,10 @@ def main():
                     shutil.copy2(model, destination)
             output = work / (label + ".snapshot")
             with output.open("wb") as stream:
-                result = subprocess.run([lua, str(probe), str(tree), str(data), "mobile" if model else "none", str(args.cases), args.memory_profile, str(args.trim_every)],
+                result = subprocess.run([lua, str(probe), str(tree), str(data),
+                                         "mobile" if model else "none", str(args.cases),
+                                         args.memory_profile, str(args.trim_every),
+                                         "legacy-ranking" if args.legacy_ranking else "current-ranking"],
                                         stdout=stream, stderr=subprocess.PIPE, timeout=600)
             if result.returncode:
                 raise RuntimeError(f"{label} probe failed:\n{result.stderr.decode('utf-8', errors='replace')}")
@@ -107,9 +113,13 @@ def main():
                   "candidate_module_sha256": digest(candidate / "lua/tiger_sentence.lua"),
                   "model_source": "synthetic" if args.fixture else "explicit-file" if model else "none",
                   "model_sha256": digest(model) if model else None,
-                  "random_cases": args.cases, "memory_profile": args.memory_profile, "trim_every": args.trim_every, "baseline": stats[0], "candidate": stats[1],
+                  "random_cases": args.cases, "memory_profile": args.memory_profile,
+                  "trim_every": args.trim_every, "legacy_ranking": args.legacy_ranking,
+                  "baseline": stats[0], "candidate": stats[1],
                   "snapshot_sha256": [digest(p) for p in outputs], "first_mismatch": mismatch,
-                  "source_manifests": {label: {str(p.relative_to(tree)): digest(p) for p in sorted((tree / "lua").glob("*.lua"))}
+                  "source_manifests": {label: {str(p.relative_to(tree)): digest(p) for p in sorted(
+                      list((tree / "lua").glob("*.lua")) +
+                      list(tree.glob("tiger_sentence.lexical.bin")))}
                                        for label, tree in (("baseline", baseline), ("candidate", candidate))}}
         text = json.dumps(report, ensure_ascii=False, indent=2)
         print(text)

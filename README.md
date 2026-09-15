@@ -11,6 +11,8 @@
 - 明文码表/字频/白名单（txt），可直接编辑或导入其它形码码表。
 - 可选 Kneser-Ney n-gram 语言模型（TCSKNM02 分页格式，Lua 直接读取）；
   无模型时自动降级为「码表名次 → 更少码表边 → 分数」排序。
+- 形码证据与约 146.5 KiB 的紧凑词先验只重排现有候选，不扩 Beam、
+  不进入自动上屏置信度，也不扩大 214 MiB 语言模型。
 - 概率型自动提前上屏与空码自动上屏；可选择先暂存在编码区，最后一次性提交。
 - 允许单字重码组句（可开关）：分段路径中的非首选单字按语言模型分数竞争。
 - 标点由 `symbols.yaml` 直通上屏；数字后的句号自动输出半角小数点 `.`。
@@ -19,7 +21,8 @@
 
 1. 复制本方案全部文件到 Rime 用户目录（Windows 默认
    `%APPDATA%\Rime\`）：`tiger_sentence.schema.yaml`、`lua/`、三个
-   `tiger_sentence.*.txt`、`tiger_sentence.supplement.txt`、`symbols.yaml`，
+   `tiger_sentence.*.txt`、`tiger_sentence.supplement.txt`、
+   `tiger_sentence.lexical.bin`、`symbols.yaml`，
    以及内部配置 `tiger_sentence_ascii.schema.yaml`（不加入 schema_list）。
 2. 在已有的 `rime.lua` 中合并注册（若没有则直接复制本包的 `rime.lua`）：
 
@@ -52,7 +55,8 @@
 宿主提交通知不能证明目标应用实际插入文字。
 
 更新时请整体替换本方案的 `lua/` 模块，包括 `tiger_sentence.lua`、
-`tiger_sentence_learning.lua`、`tiger_sentence_ngram.lua` 和 `tiger_sentence_cache.lua`，
+`tiger_sentence_learning.lua`、`tiger_sentence_ngram.lua`、
+`tiger_sentence_cache.lua` 和 `tiger_sentence_lexical.lua`，
 并同时更新主 schema、内部 ASCII schema，以及上面的四个 Lua 注册项。
 合并现有配置，保留自己的码表和学习数据库。
 
@@ -68,17 +72,18 @@
 用户目录根部 → 共享目录 `models/`。
 
 没有模型时方案完全可用：解码按码表名次优先，整码单字不会被多段拼接
-压过，仅失去语言模型排序与提前上屏的置信度计算。
+压过；语言模型排序、紧凑排序先验与提前上屏的置信度计算一并禁用。
 
 ## 数据文件与自定义
 
-全部数据为明文 txt，重新部署即生效，不需要重新生成：
+码表等基础数据为明文 txt；随包词先验是可复现生成的紧凑只读文件：
 
 | 文件 | 格式 | 作用 |
 | --- | --- | --- |
 | `tiger_sentence.codes.txt` | 每行 `字\t编码`，`#` 注释，兼容 CRLF/BOM | 码表；同码内行序即名次，编码仅小写字母（自动小写化） |
 | `tiger_sentence.char_ranks.txt` | 每行一个字，行序=频序 | 常用字最优码过滤与生僻字孤立惩罚；缺失时两者禁用 |
 | `tiger_sentence.full_code_whitelist.txt` | 白名单字符，每行一个或连排 | 白名单字保留完整编码参与组句 |
+| `tiger_sentence.lexical.bin` | TCSLEX01 Bloom filter，150,032 字节 | 5 万个 2～4 字高频词的有界 Top-5 排序票；缺失时自动禁用 |
 
 - schema 配置 `tiger_sentence/high_freq_limit`（默认 `1500`）：常用字
   （字频前 N）只保留最优码；`0` 全部放开；负数按 `0`。
@@ -92,6 +97,10 @@
   `high_freq_limit` 设为 `0` 并清空白名单。
 - `tiger_sentence.supplement.txt`：个人补充语料，每行 `词条 [权重]`，
   默认权重 1000；奖励 `clamp(9 + 2 * ln(weight / 1000), 0, 16)`。
+- 内置排序先验：正常的逐字主码按覆盖编码长度提供形码证据；只有完整 4 码
+  才能免除该字的孤立生僻惩罚。词先验仅对语言模型已经生成的 Top-5 做
+  非重叠词覆盖重排。三者均不计入提前上屏概率；参数选择与复现见
+  [紧凑排序先验记录](docs/RANKING_PRIORS.md)。
 - `symbols.yaml`：标点映射，标量/`commit` 直接上屏，数组映射显示候选。
 
 ## 输入行为
@@ -122,6 +131,7 @@
 
 性能优化保留现有 Beam 和原评分规则，测量条件见 [性能记录](tools/RIME_PERFORMANCE.md)。
 本次等价缓存优化、长码修复及独立差分验收见 [审查改进记录](docs/REVIEW_OPTIMIZATIONS.md)。
+紧凑排序先验的差异集消融、包体与边界见 [排序先验记录](docs/RANKING_PRIORS.md)。
 真实 librime 工具覆盖暂存/回删/标点（`tools/test_rime_preedit_integration.py`）、
 点选/Tab/重启学习（`tools/test_rime_learning_integration.py`）和多会话/进程重启/
 偏好迁移（`tools/test_rime_options_integration.py`）。编译对应 C++ 探针后以
@@ -171,4 +181,7 @@ lua tools/bench_rime_learning.lua lua 10
 ## 来源与许可
 
 本方案是 TigerClaw（虎爪）输入法整句行为的独立 Rime 移植。
+`tiger_sentence.lexical.bin` 派生自 rime-mohu 词库；来源、版本、转换与许可见
+[词先验署名](docs/LEXICAL_PRIOR_ATTRIBUTION.md)和
+[机器可读清单](docs/LEXICAL_PRIOR_MANIFEST.json)。
 许可证见 [LICENSE](LICENSE)（GPL-3.0）。

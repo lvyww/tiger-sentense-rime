@@ -89,8 +89,8 @@ CI results should be read from the PR checks, not inferred from local tests.
 ```sh
 python3 tools/run_regressions.py --lua lua5.4 --negative-control
 python3 tools/compare_revisions.py --baseline /path/to/old/tree --lua lua5.4 --report none.json
-python3 tools/compare_revisions.py --baseline /path/to/old/tree --lua lua5.4 --fixture --report synthetic.json
-python3 tools/compare_revisions.py --baseline /path/to/old/tree --lua lua5.4 --model /path/to/sentence-ngram-mobile.bin --require-model --report production.json
+python3 tools/compare_revisions.py --baseline /path/to/old/tree --lua lua5.4 --fixture --legacy-ranking --report synthetic.json
+python3 tools/compare_revisions.py --baseline /path/to/old/tree --lua lua5.4 --model /path/to/sentence-ngram-mobile.bin --require-model --legacy-ranking --report production.json
 lua5.4 tools/bench_review_learning.lua /path/to/source/tree 7
 ```
 
@@ -101,3 +101,5 @@ outside timing; live-heap end-minus-start is **not** allocation count, GC pause
 or total process memory. Shared-container exploratory timings were noisy and
 are not a general speedup claim. The production-model benchmark and actual
 frontend latency remain required before advertising a user-visible multiplier.
+`--legacy-ranking` disables the later compact ranking priors only for this
+historical behavior-equivalence check; labeled accuracy tests use current defaults.

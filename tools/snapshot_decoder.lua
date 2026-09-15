@@ -7,6 +7,11 @@ os.time=function()return 1800000000 end
 local sentence=require("tiger_sentence")
 if arg[5] and sentence.set_memory_profile then assert(sentence.set_memory_profile(arg[5])) end
 local trim_every=tonumber(arg[6]) or 0
+if arg[7]=="legacy-ranking" and sentence.set_decoder_parameters_for_test then
+    sentence.set_decoder_parameters_for_test({canonical_code_reward=0,
+        lexical_prior_weight=0,canonical_isolation_factor=1,
+        canonical_isolation_min_code_length=2})
+end
 sentence.ensure_lexicon(nil);sentence.set_model_enabled(mode~="none")
 local model=sentence.model_status()
 assert(mode=="none" or (model.loaded and model.format=="TCSKNM02"),"required paged model was not loaded")

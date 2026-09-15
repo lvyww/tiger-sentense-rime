@@ -166,8 +166,8 @@ jobs:
           mkdir -p "$baseline"
           git archive "$BASE_REF" | tar -x -C "$baseline"
           python3 tools/compare_revisions.py --baseline "$baseline" --lua lua5.4 --cases 20 --report equivalence-none.json
-          python3 tools/compare_revisions.py --baseline "$baseline" --lua lua5.4 --fixture --cases 20 --report equivalence-fixture.json
-          python3 tools/compare_revisions.py --baseline "$baseline" --lua lua5.4 --fixture --memory-profile compact --trim-every 37 --cases 20 --report equivalence-compact.json
+          python3 tools/compare_revisions.py --baseline "$baseline" --lua lua5.4 --fixture --legacy-ranking --cases 20 --report equivalence-fixture.json
+          python3 tools/compare_revisions.py --baseline "$baseline" --lua lua5.4 --fixture --legacy-ranking --memory-profile compact --trim-every 37 --cases 20 --report equivalence-compact.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:

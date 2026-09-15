@@ -2,13 +2,14 @@
 -- Usage:
 --   lua tools/bench_tiger_sentence_lua.lua [repo_root]
 --       [--mode auto|mobile|none] [--repeat N] [--burst-cases N]
---       [--require-model]
+--       [--require-model] [--set NAME=NUMBER]
 
 local repo = arg[1] or "."
 local mode = "auto"
 local repeats = 50
 local burst_cases = 20
 local require_model = false
+local parameters = {}
 for i = 2, #arg do
     if arg[i] == "--mode" then
         mode = arg[i + 1] or mode
@@ -18,6 +19,13 @@ for i = 2, #arg do
         burst_cases = math.max(0, tonumber(arg[i + 1]) or burst_cases)
     elseif arg[i] == "--require-model" then
         require_model = true
+    elseif arg[i] == "--set" then
+        local name, value = (arg[i + 1] or ""):match("^([%w_]+)=([%+%-%.%deE]+)$")
+        if not name or not tonumber(value) then
+            io.stderr:write("--set expects NAME=NUMBER\n")
+            os.exit(2)
+        end
+        parameters[name] = tonumber(value)
     end
 end
 if mode ~= "auto" and mode ~= "mobile" and mode ~= "none" then
@@ -34,6 +42,7 @@ rime_api = {
 
 local sentence = require("tiger_sentence")
 sentence.ensure_lexicon(nil)
+sentence.set_decoder_parameters_for_test(parameters)
 sentence.set_model_enabled(mode ~= "none")
 local model = sentence.model_status()
 if (require_model or mode == "mobile") and not model.loaded then

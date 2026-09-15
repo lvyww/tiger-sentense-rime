@@ -56,8 +56,8 @@ local function check_lazy_scoring(raw)
         for i = 1, #result do
             local candidate = result[i]
             if sentence.path_isolation_penalty(candidate.path) ~=
-                sentence.reference_isolation_penalty(candidate.text) then
-                fail("incremental isolation differs from full-text oracle: " .. candidate.text)
+                sentence.reference_path_isolation_penalty(candidate.path) then
+                fail("incremental isolation differs from full-path oracle: " .. candidate.text)
             end
             if rawget(candidate, "segmented") ~= nil then
                 fail("decode eagerly constructed display segmentation")
@@ -154,7 +154,12 @@ end
 if not lets_single or not lets[1] or lets[1].text ~= "旋" then
     fail("optimal whole-input single-character reward did not restore 旋 for lets")
 end
-if math.abs((lets_single.score - lets_single.confidence_score) - 5.0) > 1e-9 then
+local lets_ranking_priors = (lets_single.code_score or 0.0) +
+    (lets_single.lexical_score or 0.0) +
+    sentence.reference_isolation_penalty(lets_single.text) -
+    sentence.path_isolation_penalty(lets_single.path)
+if math.abs((lets_single.score - lets_single.confidence_score) -
+    5.0 - lets_ranking_priors) > 1e-9 then
     fail("whole-input single-character reward was not exactly 5.0 or leaked into confidence")
 end
 print("OK  optimal whole-input single-character reward is +5.0 and ranking-only")
@@ -234,8 +239,12 @@ if math.abs((supplement_target.supplement_score or 0.0) - expected_supplement) >
         expected_supplement,
         supplement_target.supplement_score or 0.0))
 end
-if math.abs(
-    supplement_target.score - supplement_target.confidence_score - expected_supplement) > 1e-9 then
+local supplement_ranking_priors = (supplement_target.code_score or 0.0) +
+    (supplement_target.lexical_score or 0.0) +
+    sentence.reference_isolation_penalty(supplement_target.text) -
+    sentence.path_isolation_penalty(supplement_target.path)
+if math.abs(supplement_target.score - supplement_target.confidence_score -
+    expected_supplement - supplement_ranking_priors) > 1e-9 then
     fail("supplement reward leaked into confidence mass")
 end
 print("OK  supplemental corpus loaded, ranked, and excluded from confidence mass")

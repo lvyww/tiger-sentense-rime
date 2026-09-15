@@ -39,7 +39,7 @@ def temporary_tree():
 def isolated_sources(destination):
     shutil.copytree(PACK / "lua", destination / "lua")
     (destination / "tools").mkdir()
-    for name in ("test_tiger_sentence_incremental.lua", "test_rime_contract.lua", "test_sentence_safety.lua", "test_sentence_learning.lua", "test_review_regressions.lua", "test_ngram_reader.lua", "test_memory.lua"):
+    for name in ("test_tiger_sentence_incremental.lua", "test_rime_contract.lua", "test_sentence_safety.lua", "test_sentence_learning.lua", "test_review_regressions.lua", "test_ngram_reader.lua", "test_memory.lua", "test_lexical_prior.lua"):
         source = (ROOT / "tools" / name).read_text(encoding="utf-8")
         # Run the shared suite in the public mirror layout, without copying
         # unrelated TigerClaw tools or any live configuration/model files.
@@ -48,6 +48,8 @@ def isolated_sources(destination):
     for pattern in ("*.txt", "*.yaml", "rime.lua"):
         for path in PACK.glob(pattern):
             shutil.copy2(path, destination / path.name)
+    shutil.copy2(ROOT / "tiger_sentence.lexical.bin",
+                 destination / "tiger_sentence.lexical.bin")
     shutil.copy2(ROOT / "tools/test_high_freq_limit.lua", destination / "tools/test_high_freq_limit.lua")
     shutil.copy2(ROOT / "tools/test_backspace.lua", destination / "tools/test_backspace.lua")
 
@@ -89,6 +91,10 @@ def negative_controls(lua, root):
         ("display-confidence", "test_sentence_safety.lua",
          '            all_candidates,\n            completed._truncated or false,',
          '            result,\n            completed._truncated or false,', "Display Top-K inflated confidence"),
+        ("ranking-prior-confidence", "test_lexical_prior.lua",
+         'confidence_score = (item.mass_score or item.score) + confidence_ending_adjustment,',
+         'confidence_score = (item.mass_score or item.score) + ending_adjustment,',
+         "ranking priors changed the Beam candidates or confidence mass"),
         ("ancestor-truncation", "test_sentence_safety.lua",
          'states[consumed_end]._truncated = true',
          'states[consumed_end]._truncated = false', "Descendant lost ancestor truncation"),
@@ -122,6 +128,11 @@ def negative_controls(lua, root):
         mutant = root / (name + ".lua")
         mutant.write_text(source.replace(before, after), encoding="utf-8")
         result = execute(lua, root, script, mutant)
+        if (name == "ranking-prior-confidence" and result.returncode == 0 and
+                '"model_features":false' in result.stdout):
+            print(json.dumps({"negative_control": name, "status": "skipped",
+                              "reason": "binary fixture API unavailable"}), flush=True)
+            continue
         if result.returncode == 0 or expected not in result.stdout:
             raise RuntimeError(f"Negative control did not fail at its functional assertion: {name}\n{result.stdout}")
         print(json.dumps({"negative_control": name, "status": "detected"}), flush=True)
@@ -166,7 +177,7 @@ def main():
     lua = str(Path(lua).resolve())
     with temporary_tree() as root:
         isolated_sources(root)
-        for script in ("test_tiger_sentence_incremental.lua", "test_rime_contract.lua", "test_sentence_safety.lua", "test_sentence_learning.lua", "test_review_regressions.lua", "test_ngram_reader.lua", "test_memory.lua"):
+        for script in ("test_tiger_sentence_incremental.lua", "test_rime_contract.lua", "test_sentence_safety.lua", "test_sentence_learning.lua", "test_review_regressions.lua", "test_ngram_reader.lua", "test_memory.lua", "test_lexical_prior.lua"):
             result = execute(lua, root, script)
             print(result.stdout, end="", flush=True)
             result.check_returncode()

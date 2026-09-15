@@ -13,7 +13,8 @@ patch:
   "tiger_sentence/memory_profile": compact
 ```
 
-整体更新 `lua/` 中本方案的四个模块，然后重新部署；无需转换或重新下载模型，
+整体更新 `lua/` 中本方案的五个模块与 `tiger_sentence.lexical.bin`，然后重新部署；
+无需转换或重新下载模型，
 无需清空学习数据。默认 `balanced` 保留较大查询缓存，`compact` 将模型数据页
 缓存从 8 MiB 改为 2 MiB，同时限制查询元数据；两档不改 Beam、评分、候选池、
 学习规则或提前上屏阈值。缩小缓存可能增加缺页和重新计算，需要实机比较延迟。
@@ -27,7 +28,8 @@ patch:
 ## 部署
 
 1. 备份输入法应用的 Rime 用户目录。
-2. 按同目录 `README.md` 部署方案、Lua 和三个明文数据 txt。
+2. 按同目录 `README.md` 部署方案、Lua、三个明文数据 txt 和 150,032 字节的
+   `tiger_sentence.lexical.bin`。
 3. 把仓库外的 `sentence-ngram-mobile.bin` 放到用户目录 `models/`。
 4. 合并而不是覆盖已有 `default.custom.yaml` 和 `rime.lua`。
 5. 重新部署并选择“虎整句”。
