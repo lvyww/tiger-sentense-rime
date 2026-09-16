@@ -962,6 +962,19 @@ local function run_early_commit_sample(sample)
     return joined, yielded, env, context
 end
 
+-- Final-stage code/lexical priors may reorder the visible menu without
+-- changing the confidence pool. Such confidence must never authorize a
+-- prefix from a different candidate; generations without a visible candidate
+-- still support the established merged-incomplete-tail policy.
+if sentence.auto_commit_matches_visible_top("鼎丁", "甲乙") then
+    fail("ranking-only confidence could commit a non-top prefix")
+end
+if not sentence.auto_commit_matches_visible_top("鼎丁", "鼎") or
+    not sentence.auto_commit_matches_visible_top(nil, "甲乙") then
+    fail("visible-top guard rejected a matching or displayless prefix")
+end
+print("OK  automatic commit always follows the final displayed top")
+
 if model.loaded then
     local joined, yielded = run_early_commit_sample("awmenamcunta")
     if joined ~= "买" then

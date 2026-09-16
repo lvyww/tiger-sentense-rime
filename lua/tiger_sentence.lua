@@ -3062,7 +3062,12 @@ local function reset_early_evidence(state)
     state.last_seen_raw = ""
 end
 
-local function try_commit_mature_prefix(env, state, evidence_raw)
+local function auto_commit_matches_visible_top(visible_top, text)
+    return visible_top == nil or
+        visible_top:sub(1, #text) == text
+end
+
+local function try_commit_mature_prefix(env, state, evidence_raw, visible_top)
     local configured = get_min_retained_raw_length(env)
     local retain = configured > 0
         and math.max(early_commit_retained_raw_length, configured)
@@ -3075,7 +3080,8 @@ local function try_commit_mature_prefix(env, state, evidence_raw)
             tracker.raw_length <= #evidence_raw and
             #evidence_raw - tracker.raw_length >= retain and
             #tracker.text > #state.committed_text and
-            tracker.text:sub(1, #state.committed_text) == state.committed_text then
+            tracker.text:sub(1, #state.committed_text) == state.committed_text and
+            auto_commit_matches_visible_top(visible_top, tracker.text) then
             if not selected or tracker_better(tracker, selected) then
                 selected = tracker
             end
@@ -3145,9 +3151,14 @@ local function try_early_commit(env)
     -- The decode above ran synchronously for exactly this raw code, so the
     -- evidence generation always matches the live composition.
     local evidence_raw = full_raw
+    -- Confidence intentionally excludes final-stage ranking priors. It can
+    -- authorize a commit only when the committed text is still a prefix of
+    -- the candidate displayed first after those priors rerank the menu. nil
+    -- preserves merged incomplete-tail evidence with no display candidate.
+    local visible_top = #decoded > 0 and decoded[1].text or nil
 
     if state.last_seen_raw == evidence_raw then
-        try_commit_mature_prefix(env, state, evidence_raw)
+        try_commit_mature_prefix(env, state, evidence_raw, visible_top)
         return
     end
 
@@ -3160,11 +3171,6 @@ local function try_early_commit(env)
     state.last_seen_raw = evidence_raw
 
     local prefixes = early_commit_evidence.prefixes or {}
-    local accepted_top = nil
-    if #decoded > 0 and (decoded[1].supplement_score or 0.0) > 0.0 then
-        accepted_top = decoded[1].text
-    end
-
     local merged_incomplete_tail = early_commit_evidence.merged_incomplete_tail or false
     local qualifying = {}
     for i = 1, #prefixes do
@@ -3175,7 +3181,7 @@ local function try_early_commit(env)
             prefix.raw_length > #state.committed_raw and
             #prefix.text > #state.committed_text and
             prefix.text:sub(1, #state.committed_text) == state.committed_text and
-            (accepted_top == nil or accepted_top:sub(1, #prefix.text) == prefix.text) and
+            auto_commit_matches_visible_top(visible_top, prefix.text) and
             (merged_incomplete_tail or prefix_belongs_to_visible(prefix, decoded)) then
             qualifying[prefix.text .. state_separator .. tostring(prefix.raw_length)] = prefix
         end
@@ -3188,7 +3194,7 @@ local function try_early_commit(env)
         -- them gain evidence, for at most three consecutive generations.
         state.trackers = retain_trackers_without_counting(state.trackers, prefixes)
         save_transient_state(context, state, env)
-        try_commit_mature_prefix(env, state, evidence_raw)
+        try_commit_mature_prefix(env, state, evidence_raw, visible_top)
         return
     end
 
@@ -3217,7 +3223,7 @@ local function try_early_commit(env)
     end
     state.trackers = next_trackers
     save_transient_state(context, state, env)
-    try_commit_mature_prefix(env, state, evidence_raw)
+    try_commit_mature_prefix(env, state, evidence_raw, visible_top)
 end
 
 local function is_plain_char_key(key_event, repr)
@@ -3834,6 +3840,7 @@ end
 M.prefix_extends = prefix_extends
 M.prefix_contradicted = prefix_contradicted
 M.retain_trackers_without_counting = retain_trackers_without_counting
+M.auto_commit_matches_visible_top = auto_commit_matches_visible_top
 M.performance_status = function()
     return {
         current = {
