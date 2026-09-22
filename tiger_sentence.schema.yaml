@@ -5,6 +5,9 @@ schema:
   version: "1.4"
   author:
     - TigerClaw
+  # 部署时连带编译 PY_c 拼音词典(简体、82 万条,随包提供,源自官方秃版小狼毫),供 ` 拼音反查使用。
+  dependencies:
+    - PY_c
   description: |
     从虎整句常用字词表生成的变长整句方案。
     码表/字频/白名单为明文 txt（tiger_sentence.codes.txt 等），运行时加载，
@@ -41,19 +44,22 @@ engine:
     - navigator
     - express_editor
   segmentors:
+    - matcher
     - abc_segmentor
     - punct_segmentor
     - fallback_segmentor
   translators:
     - punct_translator
+    - reverse_lookup_translator
     - lua_translator@tiger_sentence_translator
   filters:
     - lua_filter@tiger_sentence_buffer_filter
+    - lua_filter@tiger_sentence_reverse_filter
 
 speller:
   alphabet: "zyxwvutsrqponmlkjihgfedcba;';0123456789~"
   initials: "abcdefghijklmnopqrstuvwxyz~"
-  delimiter: " "
+  delimiter: " '"
   auto_select: false
 
 menu:
@@ -91,7 +97,20 @@ punctuator:
   import_preset: symbols
 
 recognizer:
-  import_preset: default
+  patterns:
+    reverse_lookup: "^`[a-z']*$"
+
+# 拼音反查:PY_c 为随包提供的简体全量拼音词典(源自官方秃版小狼毫);缺它时反查段无候选。
+reverse_lookup:
+  dictionary: PY_c
+  prefix: "`"
+  tips: "〔拼音〕"
+  preedit_format:
+    - "xform/([nl])v/$1ü/"
+    - "xform/([nl])ue/$1üe/"
+    - "xform/([jqxy])v/$1u/"
+  comment_format:
+    - "xform/^/ /"
 
 ascii_composer:
   good_old_caps_lock: true

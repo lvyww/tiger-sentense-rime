@@ -24,7 +24,8 @@
 1. 复制本方案全部文件到 Rime 用户目录（Windows 默认
    `%APPDATA%\Rime\`）：`tiger_sentence.schema.yaml`、`lua/`、三个
    `tiger_sentence.*.txt`、`tiger_sentence.supplement.txt`、
-   `tiger_sentence.lexical.bin`、`symbols.yaml`，
+   `tiger_sentence.lexical.bin`、拼音反查词典 `PY_c.dict.yaml` 与
+   `PY_c.schema.yaml`、`symbols.yaml`，
    以及内部配置 `tiger_sentence_ascii.schema.yaml`（不加入 schema_list）。
 2. 在已有的 `rime.lua` 中合并注册（若没有则直接复制本包的 `rime.lua`）：
 
@@ -138,6 +139,15 @@ BOS/EOS 都参与评分；同一文件同时提供孤立字先验需要的 obser
   才隐式显示全部名次；非首选多字词在任何切分路径中必须显式选重。
 - `允许单字重码组句` 开关（默认开）：分段路径中的非首选单字按语言模型
   分数竞争；`提前上屏` 开关同时控制概率型提前上屏与空码自动上屏。
+- 反引号 `` ` `` 进入拼音反查（〔拼音〕提示态）：输入拼音得到候选，注释显示
+  该单字在整句码表中的全部编码（源序即名次序）；词组候选逐字显示
+  编码（`字:码/…`，码表外字符标记 `字:?`）。
+  拼音数据为随包提供的简体全量词典 `PY_c`（82 万条，源自官方秃版小狼毫），
+  经 `schema/dependencies` 在部署时自动编译；换用其它拼音词典同理
+  patch `reverse_lookup/dictionary`。
+  反查段内数字选择候选；`'` 可作音节分隔（需要 librime 已包含上游
+  delimiter 修复，未修复的引擎输入分隔符会中断反查）。Enter 原样上屏、
+  Esc 取消。
 
 自动上屏按 `(文本前缀, raw 边界)` 独立
 累计证据，置信阈值 `0.995`、强证据/边界封闭 `0.99999`；截断的候选池
@@ -203,4 +213,5 @@ lua tools/bench_rime_learning.lua lua 10
 `tiger_sentence.lexical.bin` 派生自 rime-mohu 词库；来源、版本、转换与许可见
 [词先验署名](docs/LEXICAL_PRIOR_ATTRIBUTION.md)和
 [机器可读清单](docs/LEXICAL_PRIOR_MANIFEST.json)。
+拼音反查词典 `PY_c.dict.yaml` / `PY_c.schema.yaml` 取自 [官方秃版小狼毫](https://ys-j.ysepan.com/wap/huma/RkH8DaBQ5RhSHef/zc6fU7Iq4jEhD9a3nf7KBfA6JaPi/%E8%99%8E%E7%A0%81%E7%A7%83%E7%89%88%20%E5%B0%8F%E7%8B%BC%E6%AF%AB%EF%BC%88Win%EF%BC%892026.08.15.7z)。
 许可证见 [LICENSE](LICENSE)（GPL-3.0）。
