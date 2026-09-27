@@ -367,6 +367,7 @@ local function build_lexicon_index(entries, character_ranks, high_freq_limit, wh
 
     return {
         codes = filtered,
+        character_codes = codes_by_character,
         lengths = lengths,
         max_code_len = max_len,
         proper_code_prefixes = prefixes
@@ -412,6 +413,7 @@ local function rebuild_lexicon(limit)
     lexicon_state.built = true
     lexicon_state.high_freq_limit = limit
     lexicon_state.codes = index.codes
+    lexicon_state.character_codes = index.character_codes
     lexicon_state.lengths = index.lengths
     lexicon_state.max_code_len = index.max_code_len
     lexicon_state.proper_code_prefixes = index.proper_code_prefixes
@@ -3718,6 +3720,35 @@ local function processor(key_event, env)
             return 1
         end
         local is_letter = ch:match("^[a-z]$") ~= nil
+        -- Reverse-lookup input (`-prefixed) must never take selector keys into
+        -- the pinyin: speller's alphabet would append them and break the
+        -- lookup segment. Digits select-and-commit here; semicolon is inert.
+        -- The apostrophe is kept so the engine can split syllables by the
+        -- schema delimiter once librime honors it (upstream fix).
+        if not is_letter and context.input:sub(1, 1) == "`" then
+            if ch:match("%d") then
+                learned.pending, learned.baseline = {}, nil
+                local composition = context.composition
+                local segment = composition and not composition:empty() and composition:back()
+                local menu = segment and segment.menu
+                local index = tonumber(ch) - 1
+                local count = menu and (type(menu.prepare) == "function"
+                    and menu:prepare(candidate_limit) or menu:candidate_count())
+                if count and index >= 0 and index < count then
+                    -- Highlight + confirm mirrors Space; Context:select() may
+                    -- commit a whole-composition sentence instead.
+                    if not (type(context.highlight) == "function" and context:highlight(index)) then
+                        segment.selected_index = index
+                    end
+                    context:confirm_current_selection()
+                end
+                reset_sentence_state(context, env)
+                return 1
+            end
+            if ch == ";" then
+                return 1
+            end
+        end
         local live_before = live_input(context)
         local caret = input_caret(context)
         local full_before = state.committed_raw .. live_before
@@ -3947,6 +3978,7 @@ local function processor(key_event, env)
 end
 
 local function translator(input, seg, env)
+    if input:sub(1, 1) == "`" then return end -- backtick pinyin reverse-lookup segment
     configure_memory(env)
     ensure_lexicon(env)
     local context = env.engine.context
@@ -4206,6 +4238,40 @@ M.buffer_filter = function(input, env)
     local buffered = buffered_text(env.engine.context) ~= ""
     for candidate in input:iter() do
         if not buffered or candidate.type == "sentence_buffered" then yield(candidate) end
+    end
+end
+-- 反查段候选注释:单字显示全部编码(源序即名次序);词组逐字显示"字:码组",
+-- 码表外字符标记为"字:?"。
+local function reverse_comment(text)
+    if not lexicon_state.built then return nil end
+    local parts, chars = {}, 0
+    for ch in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+        chars = chars + 1
+        local codes = lexicon_state.character_codes[ch]
+        if chars == 1 and #text == #ch then
+            if not codes or #codes == 0 then return nil end
+            return " " .. table.concat(codes, " / ")
+        end
+        if codes and #codes > 0 then
+            parts[#parts + 1] = ch .. ":" .. table.concat(codes, "/")
+        else
+            parts[#parts + 1] = ch .. ":?"
+        end
+    end
+    if chars == 0 then return nil end
+    return " " .. table.concat(parts, " ")
+end
+M.reverse_comment = reverse_comment
+M.reverse_comment_filter = function(input, env)
+    local composition = env.engine.context.composition
+    local seg = composition and not composition:empty() and composition:back() or nil
+    local active = seg and seg:has_tag("reverse_lookup")
+    for candidate in input:iter() do
+        if active then
+            local comment = reverse_comment(candidate.text)
+            if comment then candidate.comment = comment end
+        end
+        yield(candidate)
     end
 end
 M.learning = learning

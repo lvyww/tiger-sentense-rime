@@ -131,6 +131,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+      - name: Install the Lua interpreter the TCSKNM03 test spawns
+        run: sudo apt-get update && sudo apt-get install -y lua5.4
       - name: Install real Rime development library and Lua plugin
         run: sudo apt-get update && sudo apt-get install -y g++ librime-dev librime-plugin-lua
       - name: Test TCSKNM03 converter and pure-Lua reader
