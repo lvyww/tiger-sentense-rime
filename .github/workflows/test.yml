@@ -131,8 +131,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
-      - name: Install real Rime development library and Lua plugin
-        run: sudo apt-get update && sudo apt-get install -y g++ librime-dev librime-plugin-lua
+      - name: Install real Rime development library, Lua plugin and Lua interpreter
+        run: sudo apt-get update && sudo apt-get install -y g++ lua5.4 librime-dev librime-plugin-lua
       - name: Test TCSKNM03 converter and pure-Lua reader
         run: python3 tools/test_tcs_knm03.py --lua lua5.4
       - name: Test distribution compatibility and pinned modern preedit host
@@ -161,12 +161,23 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y lua5.4
       - name: Compare both sources with one independent probe
         env:
-          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || '18adb705823b4e98e322cb4e153b2f313e4c2428' }}
+          # On a change request the pair is the merge base; otherwise it is the commit
+          # the checkout came from. A hardcoded revision would silently compare two
+          # unrelated code generations whenever the event carries no base revision.
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
           baseline="$RUNNER_TEMP/tiger-equivalence-base"
+          base="${BASE_REF:-}"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base=$(git rev-parse --quiet --verify 'HEAD^' || true)
+          fi
+          if [ -z "$base" ]; then
+            echo "::notice title=equivalence::no old/new pair for this event; nothing to compare"
+            exit 0
+          fi
           mkdir -p "$baseline"
-          git archive "$BASE_REF" | tar -x -C "$baseline"
+          git archive "$base" | tar -x -C "$baseline"
           python3 tools/compare_revisions.py --baseline "$baseline" --lua lua5.4 --cases 20 --report equivalence-none.json
           python3 tools/compare_revisions.py --baseline "$baseline" --lua lua5.4 --fixture --cases 20 --report equivalence-fixture.json
           python3 tools/compare_revisions.py --baseline "$baseline" --lua lua5.4 --fixture --memory-profile compact --trim-every 37 --cases 20 --report equivalence-compact.json
