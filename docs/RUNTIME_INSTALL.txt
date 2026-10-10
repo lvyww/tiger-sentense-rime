@@ -1,0 +1,75 @@
+虎整句 Rime 1.6.20261010.1 — 分数自学习完整包
+
+本包适用于支持 librime-lua 的 Rime 前端。方案和模型不分 CPU 架构，不需要另选 x64/x86/ARM64 包。包内已含当前生产五阶 Q8 模型，无需另行下载模型。
+
+一、首次安装
+
+1. 解压压缩包，打开“虎整句Rime-1.6.20261010.1”目录。
+2. 把以下内容复制到你的 Rime 用户目录（Windows 常见路径为 %APPDATA%\Rime）：
+   - lua 文件夹
+   - models 文件夹（必须保持此层级）
+   - tiger_sentence.schema.yaml
+   - tiger_sentence_ascii.schema.yaml（内部配置，不添加到方案列表）
+   - tiger_sentence.codes.txt
+   - tiger_sentence.char_ranks.txt
+   - tiger_sentence.full_code_whitelist.txt
+   - tiger_sentence.supplement.txt
+   - symbols.yaml
+3. 如用户目录没有 rime.lua，直接复制本包的 rime.lua。如已有 rime.lua，保留原内容并合并以下注册：
+   local tiger_sentence = require("tiger_sentence")
+   tiger_sentence_processor = tiger_sentence.processor_component
+   tiger_sentence_translator = tiger_sentence.translator
+   tiger_sentence_ascii = tiger_sentence.ascii_component
+   tiger_sentence_buffer_filter = tiger_sentence.buffer_filter
+4. 如用户目录没有 default.custom.yaml，可复制本包示例；如已有文件，在其 patch/schema_list 中加入：
+   - schema: tiger_sentence
+   保留你已使用的其它方案。
+5. 在前端执行“重新部署”，然后切换到“虎整句”。前端需要包含可用的 librime-lua。
+
+二、从旧版更新
+
+整体更新 lua 文件夹、两个 schema 文件和 models 文件夹。合并 rime.lua 注册项；不要直接覆盖自己的 default.custom.yaml。
+保留个人码表、字频、白名单、补充语料、tiger_sentence.custom.yaml 和“自学习-<schema_id>.txt”等用户数据。旧的同名运行模块由本包版本覆盖。
+模型必须位于 models/sentence-fivegram-mobile.bin，词先验位于 models/tiger_sentence.lexical.bin。完整文件名、大小和 SHA-256 见 default-model.json、RELEASE.json 与 SHA256SUMS.txt。
+
+三、本次更新
+
+人工选择正码并成功提交后，学习实际输入编码与所选正码片段，分数参与解码。分数足够时，正码可以超过纠错候选，并在不同前缀的句子中复用。
+
+例如，独立选择 kzjuy → 淦掉，会学习整个两字片段；它可以用于“去淦掉”“他淦掉”“没淦掉”等句子。较长句子中的再次选择优先强化无歧义的已确认局部片段，不同时强化整句所有组合。
+同一码表 Direct 候选继续保持名次顺序；Direct 与组句候选之间可按普通学习分竞争。每次人工确认按分差增加 1～3 级，最多 10 级；一次确认仍只计一次，不冒充自动上屏证据。
+
+旧 fusion-v1| 与 exact-correction-v1| 整句硬排序记录直接忽略，不迁移，也不删除原始行；普通片段记录继续生效。旧两类记录不占有效一万条学习事件配额，日志的 16 MiB 物理大小限制仍保留。
+取消、提交文字被转换、普通首选和自动上屏不增加新学习。含纠错来源或纠错历史的候选不写入普通正码学习。
+
+此前设置与修复继续保留：
+- 唯一设置“自动选重最低码数”，默认 3，范围 0～128，0 禁用。
+- 按每个词条自身匹配的编码长度判断，不计选重后缀；不扩大非首位多字词权限。一码内部边界规则不变。
+- 整段完整候选仍可手选；首位词条、显式数字/分号/引号选重不受门槛影响。
+- 不读取、不迁移旧“允许单字重码组句”开关。
+- N 默认 1500；现有用户设置与白名单继续有效。单字主码奖励保持移除，整段单字奖励保留此前对 N 和白名单的条件。
+- 按键纠错首次默认关闭，提供关/弱/中/强四档。
+
+四、常用设置
+
+在 tiger_sentence.custom.yaml 中合并：
+patch:
+  tiger_sentence/auto_select_min_code_length: 3
+
+改为 0 即禁用自动选重；改为 2 可允许符合原有规则的双码非首选单字省略选重键。修改后重新部署。
+
+自学习开关：
+patch:
+  tiger_sentence/tab_learning: true
+
+需要整段等待手动确认时，在方案菜单关闭“提前上屏”。关闭自学习会停用学习分和新记录；重新开启后恢复有效普通记录。
+编辑自学习文本前先完全退出 Rime，避免文件锁或并发写入。
+
+五、版本、许可与验证
+
+方案版本：1.6.20261010.1。
+包内 RELEASE.json 记录精确 source commit、模型身份及文件散列；SHA256SUMS.txt 可核对全部发行文件。
+项目许可见 LICENSE。词先验来源与署名见 docs/LEXICAL_PRIOR_ATTRIBUTION.md，参数见 docs/LEXICAL_PRIOR_MANIFEST.json。
+本包提供运行所需的 Lua 脚本，没有额外的源码仓库归档、Git 历史、开发工具或测试数据。
+
+本次发行检查使用隔离的 librime/librime-lua 用户目录，不会安装或改动日用输入法。各具体前端和实体键盘/触屏的长期输入体验仍需用户实测。

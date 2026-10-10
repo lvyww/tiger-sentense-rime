@@ -21,6 +21,10 @@
 
 ## 安装（小狼毫）
 
+当前发行版本为 `1.6.20261010.1`。标准完整包包含运行 Lua、方案、明文词典及当前生产模型；
+首次安装和保留个人配置的更新步骤见 [发行版安装说明](docs/RUNTIME_INSTALL.txt)。
+完整包不另附源码仓库、Git 历史或开发工具。
+
 1. 复制本方案全部文件到 Rime 用户目录（Windows 默认
    `%APPDATA%\Rime\`）：`tiger_sentence.schema.yaml`、`lua/`、三个
    `tiger_sentence.*.txt`、`tiger_sentence.supplement.txt`、
